@@ -2,139 +2,124 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdbool.h>
-#include <string.h>
 
-#define MIN(a,b) ((a)<(b)?(a):(b))
-
-#define varint_base_t uint8_t
-#define varint_base_max UINT8_MAX
-
-//////////////////////////////////////////////////////
-// Adder
-//
-struct varint_sum_t{
-	/**
-	 * The sum
-	 */
-	varint_base_t sum;
-
-	/**
-	 * The 1-bit overflow carried
-	 */
-	bool carry;
-};
-
-void varint_adder(varint_base_t a,varint_base_t b,bool carry,struct varint_sum_t* out){
-	//Sum of a, b and the carry, letting it overflow
-	out->sum = a+b+carry;
-
-	//Check if the summing overflowed
-	out->carry = a>out->sum || b>out->sum;
-}
-
-//////////////////////////////////////////////////////
-// varint_t
-//
-typedef struct varint_t{//TODO: Endian differences
-	size_t size;
-	varint_base_t data[];//TODO: Should be uint8_t, varint_base_t is used for testing purposes at the moment. THat should be used in the calculations.
-}varint_t;
-
-varint_t* varint_init(size_t bytes){
-	varint_t* out = malloc(sizeof(varint_t) + sizeof(varint_base_t)*bytes);
-	if(out)
-		out->size = bytes;
-	return out;
-}
-
-void varint_free(varint_t* varint){
-	free(varint);
-}
-
-void varint_and(const varint_t* a,const varint_t* b,varint_t* out){
-	for(size_t i=MIN(MIN(a->size,b->size),out->size); i>0; --i){
-		out->data[i] = a->data[i]&b->data[i];
-	}
-}
+typedef uint8_t byte;
 
 /**
- * @return True if overflowing, false otherwise
+ * @return Whether the summing overflowed the limit limited by the size/capacity of the data
  */
-bool varint_add(const varint_t* a,const varint_t* b,varint_t* out){
-	//For simplicity, guarantees a.size >= b.size
-	if(a->size < b->size){
-		//Swap a and b
-		const varint_t* tmp = a;
-		a = b;
-		b = tmp;
-	}
-
-	struct varint_sum_t result = {0,false};
+bool varint_add(byte a[],byte b[],byte out[],size_t size){
+	//Base n carry from sum
+	bool carry = false;
+	size_t i=size;
 	
-	size_t min_size = MIN(b->size,out->size);
+	{//Calculate a big portion using the largest int type (in base BIT_SIZE*sizeof(uintmax_t))
+		if(i >= sizeof(uintmax_t)){
+			uintmax_t* sum_ptr,
+			         * a_ptr,
+			         * b_ptr;
 
-	for(size_t i=0; i<min_size; ++i){
-		varint_adder(a->data[i],b->data[i],result.carry,&result);
-		out->data[i] = result.sum;
-	}
+			do{
+				i-=sizeof(uintmax_t);
 
-	if(out->size >= a->size){
-		if(a->size != b->size)
-			memcpy(&out->data[min_size],&a->data[min_size],a->size-b->size);
+				sum_ptr = (uintmax_t*)(&out[size-i-1]);//`size-i-1` or just `i` depends on endian
+				a_ptr   = (uintmax_t*)(&a[size-i-1]);
+				b_ptr   = (uintmax_t*)(&b[size-i-1]);
 
-		if(result.carry){
-			out->data[min_size] = 1;
-			result.carry = false;
+				//Sum of a, b and the carry, letting it overflow
+				*sum_ptr = *a_ptr + *b_ptr + carry;
+				
+				///*Debugging*/printf("%u: a=%u , b=%u , carried=%u , sum = a+b+carry = %u\n",i,*a_ptr,*b_ptr,carry,*sum_ptr);
+				
+				//Check if the summing overflowed
+				carry = *a_ptr>*sum_ptr || *b_ptr>*sum_ptr;
+			}while(i>0);
 		}
 	}
 
-	return result.carry;
+	{//Calculate the rest using the smallest int type (in base BIT_SIZE*sizeof(uint8_t))
+		if(i >= sizeof(uint8_t)){
+			uint8_t* sum_ptr,
+			       * a_ptr,
+			       * b_ptr;
+
+			do{
+				i-=sizeof(uint8_t);
+
+				sum_ptr = (uint8_t*)(&out[size-i-1]);//`size-i-1` or just `i` depends on endian
+				a_ptr   = (uint8_t*)(&a[size-i-1]);
+				b_ptr   = (uint8_t*)(&b[size-i-1]);
+
+				//Sum of a, b and the carry, letting it overflow
+				*sum_ptr = *a_ptr + *b_ptr + carry;
+				
+				//Check if the summing overflowed
+				carry = *a_ptr>*sum_ptr || *b_ptr>*sum_ptr;
+			}while(i>0);
+		}
+	}
+
+	return carry;
 }
 
-bool varint_setfromdata_hostendian(varint_t* out,void* data,size_t size){
-	memcpy(out->data,data,MIN(out->size,size));
-	return size <= out->size;
+/**
+ * @param size Size of the data (a, b and out) in bytes
+ * @return     Whether the subtracting underflowed. It true,, it means that (a<b) and (2^(size*BIT_SIZE)-out = result) in theory
+ */
+bool varint_subtract(byte a[],byte b[],byte out[],size_t size){
+	//Base n borrow from difference
+	bool borrow = false;
+	size_t i=size;
+
+	{//Calculate the rest using the smallest int type (in base BIT_SIZE*sizeof(uint8_t))
+		if(i >= sizeof(uint8_t)){
+			uint8_t* diff_ptr,
+			       * a_ptr,
+			       * b_ptr;
+
+			do{
+				i-=sizeof(uint8_t);
+
+				diff_ptr = (uint8_t*)(&out[size-i-1]);//`size-i-1` or just `i` depends on endian
+				a_ptr    = (uint8_t*)(&a[size-i-1]);
+				b_ptr    = (uint8_t*)(&b[size-i-1]);
+
+				//Difference between a and b counting with the borrow
+				if(*a_ptr<*b_ptr || (borrow && *a_ptr==*b_ptr)){//a<b when a-b => underflow
+					/* Guarantees:
+					 *   0 <= (INTn_MAX-*b_ptr) <= 2^n-1
+					 *   (+1) because of UINTn_MAX being one away from the base (UINTn_MAX = 2^n-1)
+					 */
+					*diff_ptr = (UINT8_MAX-*b_ptr) + 1 + *a_ptr - borrow;
+					borrow = true;
+				}else{
+					/* Guarantees:
+					 *   *a_ptr > b_ptr
+					 */
+					*diff_ptr = (*a_ptr - *b_ptr) - borrow;
+					borrow = false;
+				}
+			}while(i>0);
+		}
+	}
+
+	return borrow;
 }
 
-int main(){
-	/*
-	struct varint_sum_t result;
-	varint_adder(1,255,false,&result);
-
-	union{
-		struct{
-			uint8_t a;
-			uint8_t b;
-		};
-
-		uint16_t ab;
-	}result2 = {
-		.a=result.sum,
-		.b=result.carry
-	};
-
-	printf("%u %u = %u\n",result.carry,result.sum,result2.ab);
-	*/
-
+int main(int argc,const char* argv[]){
 	struct{
-		uint8_t a;
+		uint16_t a;
 		uint16_t b;
-	}values = {255,257};
+		uint16_t result;
+	}values = {65500,65316};//TODO: When b is 65316, carry=0 when adding?
 
-	varint_t* a = varint_init(sizeof(values.a));
-	varint_t* b = varint_init(sizeof(values.b));
-	varint_t* result = varint_init(2);
+	bool carry;
 
-	varint_setfromdata_hostendian(a,&values.a,sizeof(values.a));
-	varint_setfromdata_hostendian(b,&values.b,sizeof(values.b));
+	carry = varint_add((byte*)&values.a,(byte*)&values.b,(byte*)&values.result,sizeof(uint16_t));
+	printf("%u + %u = %u (Carry: %u) = %u\n",values.a,values.b,values.result,carry,values.a+values.b);
 
-	bool overflow = varint_add(a,b,result);
-
-	printf("%u %u = %u %u = %u (Overflow: %i)\n",a->data[0],b->data[0],result->data[1],result->data[0],((union{varint_base_t a[2];uint16_t b;}){.a={result->data[0],result->data[1]}}).b,overflow);
-
-	varint_free(result);
-	varint_free(b);
-	varint_free(a);
+	carry = varint_subtract((byte*)&values.a,(byte*)&values.b,(byte*)&values.result,sizeof(uint16_t));
+	printf("%u - %u = %u (Borrow: %u) = %u\n",values.a,values.b,values.result,carry,values.a-values.b);
 
 	return 0;
 }
