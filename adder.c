@@ -2,13 +2,47 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <string.h>
 
 typedef uint8_t byte;
+
+inline signed char varint_compare(const byte a[],const byte b[],size_t size){
+	return memcmp(a,b,size);
+}
+
+inline bool varint_equals(const byte a[],const byte b[],size_t size){
+	return varint_compare(a,b,size)==0;
+}
+
+inline bool varint_greaterThan(const byte a[],const byte b[],size_t size){
+	return varint_compare(a,b,size)>0;
+}
+
+inline bool varint_lesserThan(const byte a[],const byte b[],size_t size){
+	return varint_compare(a,b,size)<0;
+}
+
+inline bool varint_equalsi(const byte a[],int b,size_t size){
+	if(size > sizeof(int)){
+		size_t i=size-sizeof(int);
+		while(i-->0)
+			if(a[i]!=0)
+				return false;
+		return varint_compare(a+size-sizeof(int),(byte*)&b,sizeof(int))==0;
+	}else if(size < sizeof(int)){
+		int tmp;
+		memcpy(&tmp,&b,size);
+		if(tmp!=b)
+			return false;
+		return varint_compare(a,(byte*)&b,size)==0;
+	}else
+		return *(int*)a==b;
+}
 
 /**
  * @return Whether the summing overflowed the limit limited by the size/capacity of the data
  */
-bool varint_add(byte a[],byte b[],byte out[],size_t size){
+bool varint_added(const byte a[],const byte b[],byte out[],size_t size){
 	//Base n carry from sum
 	bool carry = false;
 	size_t i=size;
@@ -66,7 +100,7 @@ bool varint_add(byte a[],byte b[],byte out[],size_t size){
  * @param size Size of the data (a, b and out) in bytes
  * @return     Whether the subtracting underflowed. It true,, it means that (a<b) and (2^(size*BIT_SIZE)-out = result) in theory
  */
-bool varint_subtract(byte a[],byte b[],byte out[],size_t size){
+bool varint_subtracted(const byte a[],const byte b[],byte out[],size_t size){
 	//Base n borrow from difference
 	bool borrow = false;
 	size_t i=size;
@@ -106,6 +140,28 @@ bool varint_subtract(byte a[],byte b[],byte out[],size_t size){
 	return borrow;
 }
 
+/**
+ * Implemented using Peasant multiplication
+ * @param size Size of the data (a, b and out) in bytes
+ * @return     Whether the multiplication overflowed.
+ */
+bool varint_multiplied(const byte a[],const byte b[],byte out[],size_t size){
+	//Initial value
+	memcpy(out,b,size);
+
+	/*
+	while(varint_greaterThani(a,0)){
+		varint_shiftRighti(a,1,size);
+		varint_shiftLefti(b,1,size);
+
+		//If b+out overflowed
+		if(varint_add(out,b,size))
+			return true;
+	}*/
+
+	return false;
+}
+
 int main(int argc,const char* argv[]){
 	struct{
 		uint16_t a;
@@ -115,10 +171,10 @@ int main(int argc,const char* argv[]){
 
 	bool carry;
 
-	carry = varint_add((byte*)&values.a,(byte*)&values.b,(byte*)&values.result,sizeof(uint16_t));
+	carry = varint_added((byte*)&values.a,(byte*)&values.b,(byte*)&values.result,sizeof(uint16_t));
 	printf("%u + %u = %u (Carry: %u) = %u\n",values.a,values.b,values.result,carry,values.a+values.b);
 
-	carry = varint_subtract((byte*)&values.a,(byte*)&values.b,(byte*)&values.result,sizeof(uint16_t));
+	carry = varint_subtracted((byte*)&values.a,(byte*)&values.b,(byte*)&values.result,sizeof(uint16_t));
 	printf("%u - %u = %u (Borrow: %u) = %u\n",values.a,values.b,values.result,carry,values.a-values.b);
 
 	return 0;
